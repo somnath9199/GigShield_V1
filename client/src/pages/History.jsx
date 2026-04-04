@@ -13,7 +13,7 @@ export default function History() {
 
     try {
       // Use backend (service role) — bypasses anon key SELECT permission issues on payouts
-      const res  = await fetch(`http://localhost:8000/api/payout/history/${encodeURIComponent(phone)}`);
+      const res  = await fetch(`https://gigshield-v1.onrender.com/api/payout/history/${encodeURIComponent(phone)}`);
       const json = await res.json();
 
       if (json.success && json.data?.length > 0) {
@@ -23,7 +23,7 @@ export default function History() {
           let city = '—';
           if (p.disruption_id) {
             try {
-              const dr = await fetch(`http://localhost:8000/api/disruption/${p.disruption_id}`);
+              const dr = await fetch(`https://gigshield-v1.onrender.com/api/disruption/${p.disruption_id}`);
               const dj = await dr.json();
               if (dj.success && dj.data) {
                 triggerLabel = dj.data.disruption_type || triggerLabel;
