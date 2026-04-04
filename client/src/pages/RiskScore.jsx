@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const API_BASE = "http://localhost:8000/api";
+const API_BASE = "https://gigshield-v1.onrender.com/api";
 
 function ScoreRing({ score, color }) {
   const radius = 72;
