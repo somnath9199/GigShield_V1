@@ -303,7 +303,7 @@ function ReportModal({ onClose }) {
     setAnalyzing(true);
     try {
       const userPhone = localStorage.getItem("userPhone");
-      const res = await fetch("http://localhost:8000/api/curfew-detection", {
+      const res = await fetch("https://gigshield-v1.onrender.com/api/curfew-detection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageBase64: photoData, userPhone }),
@@ -484,7 +484,7 @@ const Dashboard = () => {
 
     // Fetch payouts via backend (service role key — bypasses anon permission issues)
     try {
-      const res  = await fetch(`http://localhost:8000/api/payout/history/${encodeURIComponent(phone)}`);
+      const res  = await fetch(`https://gigshield-v1.onrender.com/api/payout/history/${encodeURIComponent(phone)}`);
       const json = await res.json();
       if (json.success) setPayoutsData(json.data || []);
     } catch (e) {
