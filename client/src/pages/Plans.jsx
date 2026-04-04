@@ -1,0 +1,295 @@
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "../supabaseClient";
+
+const PLAN_KEYS = { saathi: "SAATHI", rakshak: "RAKSHAK", suraksha: "SURAKSHA" };
+const HIGH_RISK_CITIES = ["Mumbai","Chennai","Kolkata","Kochi","Bhubaneswar","Visakhapatnam","Hyderabad","Patna","Guwahati"];
+const SAFE_CITIES      = ["Jaipur","Lucknow","Chandigarh","Indore","Coimbatore","Bhopal","Nagpur"];
+
+const getRiskZone = (city = "") => {
+  const c = city.toLowerCase();
+  if (HIGH_RISK_CITIES.some(r => c.includes(r.toLowerCase()))) return "HIGH";
+  if (SAFE_CITIES.some(r => c.includes(r.toLowerCase()))) return "SAFE";
+  return "MODERATE";
+};
+
+const PLANS = [
+  {
+    id: "saathi",
+    name: "SAATHI",
+    desc: "Less than a chai per week",
+    color: "#2563eb",
+    bgLight: "rgba(37,99,235,0.08)",
+    baseAnnual: 399,
+    baseWeekly: 8,
+    heatAnnual: 99,
+    heatWeekly: 2,
+    payout: 400,
+    maxDays: 8,
+    features: ["Heavy Rainfall", "Storm / Cyclone", "Flood / Evacuation", "Local Curfew / Blockade"]
+  },
+  {
+    id: "rakshak",
+    name: "RAKSHAK",
+    desc: "⭐ Most Popular · Less than a samosa per week",
+    color: "#10b981",
+    bgLight: "rgba(16,185,129,0.08)",
+    baseAnnual: 699,
+    baseWeekly: 12,
+    heatAnnual: 149,
+    heatWeekly: 3,
+    payout: 500,
+    maxDays: 12,
+    features: ["Heavy Rainfall", "Storm / Cyclone", "Flood / Evacuation", "Local Curfew / Blockade"]
+  },
+  {
+    id: "suraksha",
+    name: "SURAKSHA",
+    desc: "Premium Protection · Less than a bus ticket per week",
+    color: "#7c3aed",
+    bgLight: "rgba(124,58,237,0.08)",
+    baseAnnual: 999,
+    baseWeekly: 20,
+    heatAnnual: 199,
+    heatWeekly: 4,
+    payout: 700,
+    maxDays: 18,
+    features: ["Heavy Rainfall", "Storm / Cyclone", "Flood / Evacuation", "Local Curfew / Blockade"]
+  }
+];
+
+export default function Plans() {
+  const navigate = useNavigate();
+  const [includeHeat, setIncludeHeat] = useState(false);
+  const [loadingId, setLoadingId] = useState(null);
+  const [err, setErr] = useState("");
+  const [aiPrices, setAiPrices] = useState(null);   // { saathi, rakshak, suraksha } weekly
+  const [priceLoading, setPriceLoading] = useState(true);
+
+  // On mount: fetch AI-personalised price for the logged-in rider
+  useEffect(() => {
+    const fetchAiPrices = async () => {
+      try {
+        const phone = localStorage.getItem("userPhone");
+        if (!phone) { setPriceLoading(false); return; }
+
+        // Get user's city from profile
+        const { data: user } = await supabase
+          .from("users")
+          .select("city, avg_daily_hours, platform")
+          .eq("phone", phone)
+          .maybeSingle();
+
+        const city = user?.city || "Delhi";
+        const riskZone = getRiskZone(city);
+        const disruption_days_hist = riskZone === "HIGH" ? 12 : riskZone === "SAFE" ? 3 : 7;
+
+        // Call ML service for all 3 plans in parallel
+        const callML = (plan) =>
+          fetch("http://localhost:5000/predict/premium", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              plan,
+              risk_zone: riskZone,
+              claim_history: 0,
+              policy_year: 1,
+              heat_addon: 0,
+              platform: user?.platform || "Zomato",
+              vehicle_type: "two_wheeler",
+              monthly_earnings: 20000,
+              daily_hours: user?.avg_daily_hours || 8,
+              disruption_days_hist,
+            })
+          }).then(r => r.json());
+
+        const [s, r, su] = await Promise.all([
+          callML("SAATHI"),
+          callML("RAKSHAK"),
+          callML("SURAKSHA"),
+        ]);
+
+        setAiPrices({
+          saathi:   s.success  ? Math.round(s.data.final_price  / 52) : null,
+          rakshak:  r.success  ? Math.round(r.data.final_price  / 52) : null,
+          suraksha: su.success ? Math.round(su.data.final_price / 52) : null,
+        });
+      } catch (e) {
+        console.warn("AI pricing fetch failed, showing base prices.", e.message);
+      } finally {
+        setPriceLoading(false);
+      }
+    };
+    fetchAiPrices();
+  }, []);
+
+  const selectPlan = async (plan) => {
+    const rawPhone = localStorage.getItem("userPhone");
+    if (!rawPhone) {
+      setErr("User session not found. Please log in again.");
+      return;
+    }
+
+    setLoadingId(plan.id);
+    setErr("");
+
+    try {
+      // Use already-fetched AI price, fall back to base price
+      const aiWeekly = aiPrices?.[plan.id] ?? plan.baseWeekly;
+      const finalWeeklyPremium = aiWeekly + (includeHeat ? plan.heatWeekly : 0);
+
+      const updatePayload = {
+        selected_plan: plan.name,
+        this_week_premium: finalWeeklyPremium,
+        coverage_status: "Active",
+        include_heat: includeHeat,
+      };
+
+      // Try 10-digit format first, then +91 prefix (DB stores +916201859099)
+      let { data: updated, error } = await supabase
+        .from("users")
+        .update(updatePayload)
+        .eq("phone", rawPhone)
+        .select();
+
+      // If no rows updated, retry with +91 prefix
+      if (!error && (!updated || updated.length === 0)) {
+        ({ error } = await supabase
+          .from("users")
+          .update(updatePayload)
+          .eq("phone", `+91${rawPhone}`));
+      }
+
+      if (error) throw new Error(error.message);
+
+      navigate("/dashboard");
+    } catch (e) {
+      setErr("Failed to activate plan: " + e.message);
+    } finally {
+      setLoadingId(null);
+    }
+  };
+
+  return (
+    <div className="plans-page" style={{ padding: '32px' }}>
+      <div className="plans-header" style={{ marginBottom: 32 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 800, color: '#fff', marginBottom: 12 }}>Parametric Insurance Plans</h1>
+        <p style={{ fontSize: 15, color: 'var(--muted)', maxWidth: 640, lineHeight: 1.5 }}>
+          GigShield collects premium annually to prevent weather-fraud, but we break the pricing down into weekly costs so it aligns closely with your regular gig earnings. Select your coverage block below to activate your Dashboard.
+        </p>
+      </div>
+
+      <div className="heat-toggle-box" style={{ 
+        background: 'rgba(255,100,0,0.05)', border: '1px solid rgba(255,100,0,0.2)', padding: '16px 24px', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 40, maxWidth: 640
+       }}>
+        <div>
+          <h3 style={{ fontSize: 16, color: '#f97316', marginBottom: 4 }}>🔥 Extreme Heat Coverage (Optional Add-On)</h3>
+          <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0, lineHeight: 1.4, maxWidth: 450 }}>Add automated payouts for when temperatures exceed 45°C for 3+ consecutive hours in your localized zone.</p>
+        </div>
+        
+        <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 50, height: 28, flexShrink: 0 }}>
+          <input type="checkbox" checked={includeHeat} onChange={e => setIncludeHeat(e.target.checked)} style={{ opacity: 0, width: 0, height: 0 }} />
+          <span className="slider round" style={{ 
+            position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0, 
+            backgroundColor: includeHeat ? '#f97316' : 'rgba(255,255,255,0.08)', transition: '.4s', borderRadius: 28,
+            border: '1px solid ' + (includeHeat ? '#ea580c' : 'rgba(255,255,255,0.15)')
+          }}>
+            <span style={{ 
+              position: 'absolute', content: '""', height: 20, width: 20, left: 4, bottom: 3, 
+              backgroundColor: includeHeat ? '#fff' : '#888', transition: '.4s', borderRadius: '50%',
+              transform: includeHeat ? 'translateX(20px)' : 'none'
+            }} />
+          </span>
+        </label>
+      </div>
+
+      {err && <div className="err-msg" style={{ marginBottom: 20 }}>{err}</div>}
+
+      <div
+        className="plans-grid"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+          gap: 24,
+          paddingBottom: 60
+        }}
+      >
+        {PLANS.map((p) => {
+          // Use AI price if available, fallback to static baseWeekly
+          const aiWeekly = aiPrices?.[p.id] ?? null;
+          const wBase   = aiWeekly !== null ? aiWeekly : p.baseWeekly;
+          const wTotal  = wBase + (includeHeat ? p.heatWeekly : 0);
+          const aTotal  = wTotal * 52;
+
+
+          return (
+            <div key={p.id} className="plan-card" style={{ 
+              background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' 
+            }}>
+              <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: 4, background: p.color }} />
+              
+              <h2 style={{ fontSize: 22, fontWeight: 800, color: p.color, marginBottom: 8, letterSpacing: -0.5 }}>{p.name}</h2>
+              <p style={{ fontSize: 13, color: 'var(--muted)', minHeight: 38, marginBottom: 20 }}>{p.desc}</p>
+              
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+                  {priceLoading ? (
+                    <span style={{ width: 80, height: 40, background: "rgba(255,255,255,0.07)", borderRadius: 8, display: "inline-block", animation: "pulse 1.4s ease-in-out infinite" }} />
+                  ) : (
+                    <span style={{ fontSize: 36, fontWeight: 800, color: "#fff", lineHeight: 1, letterSpacing: -1 }}>₹{wTotal}</span>
+                  )}
+                  <span style={{ fontSize: 14, color: "var(--muted)", paddingBottom: 4 }}>/ week</span>
+                </div>
+                <div style={{ fontSize: 12, color: "#7070a0", marginTop: 10 }}>
+                  Billed annually at ₹{aTotal}/year
+                </div>
+                {aiPrices?.[p.id] && (
+                  <div style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 5, background: "rgba(124,110,249,0.12)", border: "1px solid rgba(124,110,249,0.25)", borderRadius: 20, padding: "3px 10px" }}>
+                    <span style={{ fontSize: 10 }}>🤖</span>
+                    <span style={{ fontSize: 11, color: "#a89cf7", fontWeight: 600 }}>AI-personalised for your city &amp; risk zone</span>
+                  </div>
+                )}
+
+              </div>
+
+              <div style={{ background: p.bgLight, borderRadius: 8, padding: 16, marginBottom: 24, border: `1px solid ${p.color}22` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, fontSize: 14 }}>
+                  <span style={{ color: 'var(--muted)' }}>Payout per day:</span>
+                  <span style={{ fontWeight: 700, color: p.color }}>₹{p.payout}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14 }}>
+                  <span style={{ color: 'var(--muted)' }}>Max claimable:</span>
+                  <span style={{ fontWeight: 700, color: '#fff' }}>{p.maxDays} days/yr</span>
+                </div>
+              </div>
+
+              <div className="features-list" style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1.2, color: 'var(--muted)', marginBottom: 16 }}>Included Triggers</div>
+                {p.features.map(f => (
+                  <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: '#e8e8f2', marginBottom: 12 }}>
+                    <span style={{ color: p.color, fontWeight: 800 }}>✓</span> {f}
+                  </div>
+                ))}
+                {includeHeat && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: '#f97316', marginBottom: 12 }}>
+                    <span style={{ color: '#f97316', fontWeight: 800 }}>✓</span> Extreme Heat &gt; 45°C
+                  </div>
+                )}
+              </div>
+
+              <button 
+                disabled={loadingId === p.id}
+                onClick={() => selectPlan(p)}
+                style={{ 
+                  marginTop: 32, width: '100%', padding: '14px', borderRadius: 8, border: 'none', background: p.color, color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: loadingId === p.id ? 0.6 : 1, transition: '0.2s', boxShadow: `0 8px 24px ${p.color}44`
+                }}
+              >
+                {loadingId === p.id ? "Activating..." : `Activate ${p.name} →`}
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  );
+}
