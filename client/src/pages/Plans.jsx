@@ -86,7 +86,7 @@ export default function Plans() {
 
         // Call ML service for all 3 plans in parallel
         const callML = (plan) =>
-          fetch("http://localhost:5000/predict/premium", {
+          fetch("https://gigshield-ml-model-kafi.onrender.com/predict/premium", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
