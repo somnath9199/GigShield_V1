@@ -303,7 +303,7 @@ function ReportModal({ onClose }) {
     setAnalyzing(true);
     try {
       const userPhone = localStorage.getItem("userPhone");
-      const res = await fetch("https://gigshield-ml-model-kafi.onrender.com/api/curfew-detection", {
+      const res = await fetch("https://gigshield-ml-model-kafi.onrender.com/predict/curfew", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageBase64: photoData, userPhone }),
